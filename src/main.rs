@@ -6,6 +6,7 @@ use bluer::{
     DiscoveryFilter, DiscoveryTransport,
 };
 mod bluetooth;
+mod server;
 
 async fn request_pin_code(_req: RequestPinCode) -> ReqResult<String> {
     Ok("9999".into())
@@ -32,10 +33,15 @@ async fn main() -> bluer::Result<()> {
         request_passkey: Some(Box::new(|req| Box::pin(request_passkey(req)))),
         ..Default::default()
     };
-    let _ahandle = session.register_agent(agent).await?;
-    device.pair().await?;
-    // let profile_handle = session.register_profile(Profile::default()).await?;
-    // profile_handle
-    device.start_comm().await?;
+    let _ahandle = match session.register_agent(agent).await {
+        Ok(handle) => handle,
+        Err(e) => {
+            println!("Agent Registration Failed: {:?}", e);
+            return Ok(());
+        }
+    };
+    let mut server = server::server::new(device);
+    server.start().await.unwrap();
+    server.run().await.unwrap();
     Ok(())
 }

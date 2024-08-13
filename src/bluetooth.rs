@@ -1,9 +1,11 @@
 use bluer::{
+    l2cap::stream,
     rfcomm::{SocketAddr, Stream},
     Adapter, AdapterEvent, Address, DeviceEvent, DiscoveryFilter, DiscoveryTransport,
 };
 use futures::{pin_mut, stream::SelectAll, StreamExt};
-use std::{collections::HashSet, env};
+use std::{collections::HashSet, env, fmt::format};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 async fn compare_addr_with_name(
     adapter: &Adapter,
     name: &str,
@@ -21,6 +23,7 @@ pub struct Device {
     name: String,
     address: Address,
     adapter: Adapter,
+    stream: Option<Stream>,
 }
 
 impl Device {
@@ -29,6 +32,7 @@ impl Device {
             name,
             address: Address::default(),
             adapter,
+            stream: None,
         }
     }
     pub async fn search_device_return_addr(&mut self, name: &str) -> Result<Address, bluer::Error> {
@@ -79,17 +83,78 @@ impl Device {
     }
     pub async fn pair(&self) -> Result<(), bluer::Error> {
         let device = self.adapter.device(self.address)?;
-        device.pair().await?;
+        let err = device.pair().await;
+        match err {
+            Err(e) => {
+                if e.kind == bluer::ErrorKind::AlreadyExists {
+                    return Ok(());
+                } else {
+                    return Err(e);
+                }
+            }
+            _ => {}
+        }
         Ok(())
     }
-    pub async fn start_comm(&self) -> Result<(), bluer::Error> {
+    pub async fn start_comm(&mut self) -> Result<(), bluer::Error> {
         let socket_addr = SocketAddr {
             addr: self.address,
             channel: 1,
         };
-        let stream = Stream::connect(socket_addr)
-            .await
-            .expect("Connection failed");
+        let mut stream = match Stream::connect(socket_addr).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                return Err(bluer::Error {
+                    kind: bluer::ErrorKind::AlreadyExists,
+                    message: format!("Error Connecting Stream {:?}", e),
+                });
+            }
+        };
+        self.stream = Some(stream);
+
         Ok(())
+    }
+    async fn shutdown(&mut self) -> Result<(), bluer::Error> {
+        match self.stream.as_mut() {
+            Some(stream) => {
+                stream.shutdown().await?;
+            }
+            None => {
+                return Err(bluer::Error {
+                    kind: bluer::ErrorKind::AlreadyExists,
+                    message: "Stream not found".to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+    pub async fn send_message(&mut self, content: &[u8]) -> Result<(), bluer::Error> {
+        match self.stream.as_mut() {
+            Some(stream) => {
+                stream.write(content).await?;
+            }
+            None => {
+                return Err(bluer::Error {
+                    kind: bluer::ErrorKind::AlreadyExists,
+                    message: "Stream not found".to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+    pub async fn receive_message(&mut self) -> Result<Vec<u8>, bluer::Error> {
+        let mut buffer = vec![0; 1024];
+        match self.stream.as_mut() {
+            Some(stream) => {
+                stream.read(&mut buffer).await?;
+            }
+            None => {
+                return Err(bluer::Error {
+                    kind: bluer::ErrorKind::AlreadyExists,
+                    message: "Stream not found".to_string(),
+                });
+            }
+        }
+        Ok(buffer)
     }
 }
